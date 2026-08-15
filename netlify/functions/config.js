@@ -7,6 +7,8 @@
 
      BRAND        brend nomi        (default: Top Sales)
      ADMIN_LINK   admin havolasi    (default: https://t.me/Topsalesadmin)
+     LOGO_URL     logo rasmi        (masalan: /logo.png yoki to'liq havola)
+                  bo'sh bo'lsa — brend nomining birinchi harfi ko'rsatiladi
    ============================================================ */
 
 exports.handler = async () => ({
@@ -18,5 +20,6 @@ exports.handler = async () => ({
   body: JSON.stringify({
     brand:     process.env.BRAND      || "Ecom Audit",
     adminLink: process.env.ADMIN_LINK || "https://t.me/nurullo2609",
+    logo:      process.env.LOGO_URL   || "",
   }),
 });
