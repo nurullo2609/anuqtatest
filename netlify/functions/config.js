@@ -16,7 +16,7 @@ exports.handler = async () => ({
     "cache-control": "public, max-age=60",
   },
   body: JSON.stringify({
-    brand:     process.env.BRAND      || "Top Sales",
-    adminLink: process.env.ADMIN_LINK || "https://t.me/Topsalesadmin",
+    brand:     process.env.BRAND      || "Ecom Audit",
+    adminLink: process.env.ADMIN_LINK || "https://t.me/nurullo2609",
   }),
 });
