@@ -170,11 +170,11 @@ Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 1600,
+      max_tokens: 1000,
       system,
       messages: [{ role: "user", content: prompt }],
     }),
-  }, 15000, "Anthropic API");
+  }, 20000, "Anthropic API");
 
   if (!r.ok) throw new Error("Anthropic API " + r.status + ": " + (await r.text()).slice(0, 300));
   const data = await r.json();
