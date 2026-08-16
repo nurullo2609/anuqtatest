@@ -41,8 +41,11 @@ async function withTimeout(url, opts, ms, label) {
    ulanishni IPv4'ga majburlab, shu holatni chetlab o'tamiz. */
 function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
   return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const dt = () => Date.now() - t0;
     const body = JSON.stringify(bodyObj);
     const u = new URL(urlStr);
+    console.log(`[${label}] boshlandi host=${u.hostname}`);
     const req = https.request({
       hostname: u.hostname,
       path: u.pathname + u.search,
@@ -51,9 +54,11 @@ function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
       headers: { ...headers, "content-type": "application/json", "content-length": Buffer.byteLength(body) },
       timeout: ms,
     }, (res) => {
+      console.log(`[${label}] headers keldi t=${dt()}ms status=${res.statusCode}`);
       let data = "";
       res.on("data", (chunk) => { data += chunk; });
       res.on("end", () => {
+        console.log(`[${label}] tugadi t=${dt()}ms`);
         resolve({
           ok: res.statusCode >= 200 && res.statusCode < 300,
           status: res.statusCode,
@@ -62,8 +67,17 @@ function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
         });
       });
     });
-    req.on("timeout", () => req.destroy(new Error(label + " " + ms + "ms ichida javob bermadi")));
-    req.on("error", reject);
+    req.on("socket", (socket) => {
+      console.log(`[${label}] socket berildi t=${dt()}ms`);
+      socket.on("lookup", (err, address, family) => console.log(`[${label}] DNS lookup t=${dt()}ms addr=${address} family=${family} err=${err}`));
+      socket.on("connect", () => console.log(`[${label}] TCP connect t=${dt()}ms`));
+      socket.on("secureConnect", () => console.log(`[${label}] TLS secureConnect t=${dt()}ms`));
+    });
+    req.on("timeout", () => {
+      console.log(`[${label}] TIMEOUT t=${dt()}ms — socket holati:`, req.socket ? req.socket.readyState : "no socket");
+      req.destroy(new Error(label + " " + ms + "ms ichida javob bermadi"));
+    });
+    req.on("error", (e) => { console.log(`[${label}] ERROR t=${dt()}ms code=${e.code} msg=${e.message}`); reject(e); });
     req.write(body);
     req.end();
   });
