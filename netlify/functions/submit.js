@@ -77,6 +77,9 @@ function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
    cheklanadi — "javob umuman kelmayapti" degan noaniqlik yo'qoladi. */
 function askClaudeStreaming(headers, bodyObj, ms) {
   return new Promise((resolve, reject) => {
+    let text = "", buf = "", settled = false;
+    const finish = (fn, arg) => { if (settled) return; settled = true; clearTimeout(timer); fn(arg); };
+
     const body = JSON.stringify({ ...bodyObj, stream: true });
     const req = https.request({
       hostname: "api.anthropic.com",
@@ -88,10 +91,9 @@ function askClaudeStreaming(headers, bodyObj, ms) {
       if (res.statusCode !== 200) {
         let raw = "";
         res.on("data", (c) => { raw += c; });
-        res.on("end", () => reject(new Error("Anthropic API " + res.statusCode + ": " + raw.slice(0, 300))));
+        res.on("end", () => finish(reject, new Error("Anthropic API " + res.statusCode + ": " + raw.slice(0, 300))));
         return;
       }
-      let text = "", buf = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => {
         buf += chunk;
@@ -105,16 +107,23 @@ function askClaudeStreaming(headers, bodyObj, ms) {
           try {
             const evt = JSON.parse(jsonStr);
             if (evt.type === "content_block_delta" && evt.delta && evt.delta.text) text += evt.delta.text;
-            if (evt.type === "error") reject(new Error("Anthropic stream xatosi: " + JSON.stringify(evt.error)));
+            if (evt.type === "error") finish(reject, new Error("Anthropic stream xatosi: " + JSON.stringify(evt.error)));
           } catch { /* to'liqsiz bo'lak, keyingi chunk bilan davom etadi */ }
         }
       });
-      res.on("end", () => resolve(text.trim()));
-      res.on("error", reject);
+      res.on("end", () => finish(resolve, text.trim()));
+      res.on("error", (e) => finish(reject, e));
     });
-    const timer = setTimeout(() => req.destroy(new Error("Anthropic API " + ms + "ms ichida to'liq javob bermadi")), ms);
-    req.on("close", () => clearTimeout(timer));
-    req.on("error", reject);
+    /* Muddat tugaganda hozirgacha kelgan matnni yo'qotmaymiz — Claude javob
+       vaqti beqaror (ba'zan 23s, ba'zan 28s+), shuning uchun to'liqsiz bo'lsa
+       ham qisman tahlil hech narsadan yaxshi. Faqat hali hech narsa kelmagan
+       bo'lsagina xato qaytaramiz. */
+    const timer = setTimeout(() => {
+      if (text.trim()) finish(resolve, text.trim());
+      else finish(reject, new Error("Anthropic API " + ms + "ms ichida javob bermadi"));
+      req.destroy();
+    }, ms);
+    req.on("error", (e) => finish(reject, e));
     req.write(body);
     req.end();
   });
