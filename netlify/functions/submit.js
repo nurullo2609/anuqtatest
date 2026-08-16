@@ -41,11 +41,8 @@ async function withTimeout(url, opts, ms, label) {
    ulanishni IPv4'ga majburlab, shu holatni chetlab o'tamiz. */
 function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
   return new Promise((resolve, reject) => {
-    const t0 = Date.now();
-    const dt = () => Date.now() - t0;
     const body = JSON.stringify(bodyObj);
     const u = new URL(urlStr);
-    console.log(`[${label}] boshlandi host=${u.hostname}`);
     const req = https.request({
       hostname: u.hostname,
       path: u.pathname + u.search,
@@ -54,11 +51,9 @@ function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
       headers: { ...headers, "content-type": "application/json", "content-length": Buffer.byteLength(body) },
       timeout: ms,
     }, (res) => {
-      console.log(`[${label}] headers keldi t=${dt()}ms status=${res.statusCode}`);
       let data = "";
       res.on("data", (chunk) => { data += chunk; });
       res.on("end", () => {
-        console.log(`[${label}] tugadi t=${dt()}ms`);
         resolve({
           ok: res.statusCode >= 200 && res.statusCode < 300,
           status: res.statusCode,
@@ -67,17 +62,59 @@ function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
         });
       });
     });
-    req.on("socket", (socket) => {
-      console.log(`[${label}] socket berildi t=${dt()}ms`);
-      socket.on("lookup", (err, address, family) => console.log(`[${label}] DNS lookup t=${dt()}ms addr=${address} family=${family} err=${err}`));
-      socket.on("connect", () => console.log(`[${label}] TCP connect t=${dt()}ms`));
-      socket.on("secureConnect", () => console.log(`[${label}] TLS secureConnect t=${dt()}ms`));
+    req.on("timeout", () => req.destroy(new Error(label + " " + ms + "ms ichida javob bermadi")));
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+/* Diagnostika shuni ko'rsatdi: DNS/TCP/TLS 200ms ichida tugaydi, lekin
+   to'liq javobni kutish (stream:false) 20+ soniya olishi mumkin — Claude
+   uzun matnni bir zumda emas, generatsiya qilib chiqaradi. Shuning uchun
+   Anthropic'ni oqim (SSE) rejimida chaqiramiz: birinchi bo'laklar bir necha
+   soniyada kela boshlaydi, umumiy vaqt esa faqat oxirgi qattiq muddat bilan
+   cheklanadi — "javob umuman kelmayapti" degan noaniqlik yo'qoladi. */
+function askClaudeStreaming(headers, bodyObj, ms) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ ...bodyObj, stream: true });
+    const req = https.request({
+      hostname: "api.anthropic.com",
+      path: "/v1/messages",
+      method: "POST",
+      family: 4,
+      headers: { ...headers, "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        let raw = "";
+        res.on("data", (c) => { raw += c; });
+        res.on("end", () => reject(new Error("Anthropic API " + res.statusCode + ": " + raw.slice(0, 300))));
+        return;
+      }
+      let text = "", buf = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        buf += chunk;
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          const jsonStr = dataLine.slice(5).trim();
+          try {
+            const evt = JSON.parse(jsonStr);
+            if (evt.type === "content_block_delta" && evt.delta && evt.delta.text) text += evt.delta.text;
+            if (evt.type === "error") reject(new Error("Anthropic stream xatosi: " + JSON.stringify(evt.error)));
+          } catch { /* to'liqsiz bo'lak, keyingi chunk bilan davom etadi */ }
+        }
+      });
+      res.on("end", () => resolve(text.trim()));
+      res.on("error", reject);
     });
-    req.on("timeout", () => {
-      console.log(`[${label}] TIMEOUT t=${dt()}ms — socket holati:`, req.socket ? req.socket.readyState : "no socket");
-      req.destroy(new Error(label + " " + ms + "ms ichida javob bermadi"));
-    });
-    req.on("error", (e) => { console.log(`[${label}] ERROR t=${dt()}ms code=${e.code} msg=${e.message}`); reject(e); });
+    const timer = setTimeout(() => req.destroy(new Error("Anthropic API " + ms + "ms ichida to'liq javob bermadi")), ms);
+    req.on("close", () => clearTimeout(timer));
+    req.on("error", reject);
     req.write(body);
     req.end();
   });
@@ -149,7 +186,7 @@ async function writeToSheet(d, analysis) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ...d, analysis: analysis || "" }),
-  }, 8000, "Sheets webhook");
+  }, 4000, "Sheets webhook");
   if (!res.ok) throw new Error("Sheets webhook " + res.status + ": " + (await res.text()).slice(0, 300));
 }
 
@@ -211,7 +248,7 @@ Umumiy maslahat berma ("ko'proq harakat qiling" kabi).
 
 Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
 
-  const r = await httpsPostJSON("https://api.anthropic.com/v1/messages", {
+  const text = await askClaudeStreaming({
     "x-api-key": key,
     "anthropic-version": "2023-06-01",
   }, {
@@ -219,11 +256,8 @@ Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
     max_tokens: 1000,
     system,
     messages: [{ role: "user", content: prompt }],
-  }, 20000, "Anthropic API");
+  }, 23000);
 
-  if (!r.ok) throw new Error("Anthropic API " + r.status + ": " + (await r.text()).slice(0, 300));
-  const data = await r.json();
-  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
   if (!text) throw new Error("Bo'sh javob");
   return text;
 }
@@ -247,7 +281,7 @@ async function tg(text) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-    }, 8000, "Telegram sendMessage");
+    }, 4000, "Telegram sendMessage");
     if (!res.ok) console.error("TG sendMessage:", await res.text());
   }
 }
@@ -264,7 +298,7 @@ async function tgDoc(content, filename, caption) {
   if (process.env.TELEGRAM_THREAD_ID) form.append("message_thread_id", process.env.TELEGRAM_THREAD_ID);
   form.append("document", new Blob([content], { type: "text/plain" }), filename);
 
-  const res = await withTimeout(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form }, 8000, "Telegram sendDocument");
+  const res = await withTimeout(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form }, 6000, "Telegram sendDocument");
   if (!res.ok) console.error("TG sendDocument:", await res.text());
 }
 
