@@ -14,6 +14,8 @@
      TELEGRAM_THREAD_ID   ixtiyoriy, guruh mavzusi (topic) id
    ============================================================ */
 
+const https = require("https");
+
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
 /* Har bir tashqi so'rov o'zining muddatiga ega bo'lishi shart — aks holda
@@ -31,6 +33,40 @@ async function withTimeout(url, opts, ms, label) {
   } finally {
     clearTimeout(t);
   }
+}
+
+/* global fetch (undici) ba'zi Netlify funksiya muhitlarida api.anthropic.com'ga
+   ulanishda IPv6 orqali "osilib qoladi" — javob kelmaydi, xato ham bermaydi,
+   toki bizning timeout uni to'xtatmaguncha. Node'ning o'z https moduli orqali
+   ulanishni IPv4'ga majburlab, shu holatni chetlab o'tamiz. */
+function httpsPostJSON(urlStr, headers, bodyObj, ms, label) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(bodyObj);
+    const u = new URL(urlStr);
+    const req = https.request({
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: "POST",
+      family: 4,
+      headers: { ...headers, "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+      timeout: ms,
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          text: async () => data,
+          json: async () => JSON.parse(data),
+        });
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error(label + " " + ms + "ms ichida javob bermadi")));
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 exports.handler = async (event) => {
@@ -161,19 +197,14 @@ Umumiy maslahat berma ("ko'proq harakat qiling" kabi).
 
 Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
 
-  const r = await withTimeout("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1000,
-      system,
-      messages: [{ role: "user", content: prompt }],
-    }),
+  const r = await httpsPostJSON("https://api.anthropic.com/v1/messages", {
+    "x-api-key": key,
+    "anthropic-version": "2023-06-01",
+  }, {
+    model: MODEL,
+    max_tokens: 1000,
+    system,
+    messages: [{ role: "user", content: prompt }],
   }, 20000, "Anthropic API");
 
   if (!r.ok) throw new Error("Anthropic API " + r.status + ": " + (await r.text()).slice(0, 300));
