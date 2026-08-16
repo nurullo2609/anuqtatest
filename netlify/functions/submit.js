@@ -253,10 +253,10 @@ Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
     "anthropic-version": "2023-06-01",
   }, {
     model: MODEL,
-    max_tokens: 1000,
+    max_tokens: 1200,
     system,
     messages: [{ role: "user", content: prompt }],
-  }, 23000);
+  }, 25000);
 
   if (!text) throw new Error("Bo'sh javob");
   return text;
