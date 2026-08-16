@@ -11,8 +11,9 @@ sun'iy intellekt tahlili ekranda → hammasi Telegram guruhga tushadi.
 ```
 index.html                    interfeys (barcha ekranlar, dizayn, mantiq)
 questions.js                  savollar bazasi — SIZ TAHRIRLAYDIGAN ASOSIY FAYL
-netlify/functions/submit.js   Claude tahlili + Telegramga yuborish
+netlify/functions/submit.js   Claude tahlili + Telegramga yuborish + Sheets webhook
 netlify/functions/config.js   brend nomi va admin havolasi (env orqali)
+Code.gs                       Google Apps Script — natijalarni Sheets'ga yozadi (ixtiyoriy)
 netlify.toml                  Netlify sozlamalari
 ```
 
@@ -58,6 +59,7 @@ Netlify → **Site configuration → Environment variables** → qo'shing:
 | `ADMIN_LINK` | `https://t.me/Topsalesadmin` | — |
 | `ANTHROPIC_MODEL` | default `claude-sonnet-5` | — |
 | `TELEGRAM_THREAD_ID` | guruh mavzusi id | — |
+| `GSHEETS_WEBHOOK_URL` | Apps Script `/exec` havolasi (bo'lim 7) | — |
 
 Qo'shgandan keyin **Deploys → Trigger deploy → Clear cache and deploy site**.
 
@@ -97,7 +99,27 @@ qator qo'shing.
 
 ---
 
-## 7. Telegramda nima ko'rinadi
+## 7. Google Sheets'ga yozish (ixtiyoriy)
+
+Har bir test natijasi Telegramdan tashqari jadvalga ham yozilishini xohlasangiz:
+
+1. Google Sheets'da bo'sh jadval yarating, havolasini nusxalab oling.
+2. https://script.google.com → **New project** → kodni o'chirib, ushbu repodagi
+   `Code.gs` faylini to'liq joylashtiring.
+3. Chap tomondagi ⚙️ **Project Settings → Script Properties → Add script property**:
+   `SHEET_ID` — jadval havolasi (yoki faqat ID) qiymatini kiriting.
+4. **Deploy → New deployment → Web app**:
+   Execute as: **Me**, Who has access: **Anyone** → Deploy.
+   Chiqqan `/exec` bilan tugaydigan havolani nusxalang.
+5. Netlify → Environment variables'ga qo'shing: `GSHEETS_WEBHOOK_URL` = shu havola.
+6. **Deploys → Trigger deploy → Clear cache and deploy site**.
+
+Mijozlar va hodimlar natijalari jadvalda alohida varaqqa ("Mijozlar" / "Hodimlar")
+yoziladi, chunki ikki yo'nalishning sohalari boshqa-boshqa. `GSHEETS_WEBHOOK_URL`
+qo'yilmasa, bu qadam butunlay o'tkazib yuboriladi — Telegram va AI tahlilga ta'sir
+qilmaydi.
+
+## 8. Telegramda nima ko'rinadi
 
 Har bir test uchun **3 ta xabar** keladi:
 

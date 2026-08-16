@@ -73,8 +73,26 @@ exports.handler = async (event) => {
     console.error("Telegram error:", e);
   }
 
+  /* ---------- 3. Google Sheets (ixtiyoriy) ---------- */
+  try {
+    if (process.env.GSHEETS_WEBHOOK_URL) {
+      await writeToSheet(d, analysis);
+    }
+  } catch (e) {
+    console.error("Sheets error:", e);
+  }
+
   return json(200, { ok: true, analysis });
 };
+
+async function writeToSheet(d, analysis) {
+  const res = await fetch(process.env.GSHEETS_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...d, analysis: analysis || "" }),
+  });
+  if (!res.ok) throw new Error("Sheets webhook " + res.status + ": " + (await res.text()).slice(0, 300));
+}
 
 /* ---------------- Claude ---------------- */
 async function askClaude(d) {
