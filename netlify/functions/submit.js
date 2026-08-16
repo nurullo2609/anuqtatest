@@ -265,7 +265,7 @@ Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
     max_tokens: 1200,
     system,
     messages: [{ role: "user", content: prompt }],
-  }, 25000);
+  }, 21000);
 
   if (!text) throw new Error("Bo'sh javob");
   return text;
