@@ -16,6 +16,23 @@
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
+/* Har bir tashqi so'rov o'zining muddatiga ega bo'lishi shart — aks holda
+   bitta sekin/osilib qolgan chaqiruv (masalan Claude) butun funksiyani
+   Netlify'ning 30 soniyalik qattiq limitigacha bloklaydi va natijada
+   undan keyin turgan hech narsa (Telegram, Sheets) ishga tushmaydi. */
+async function withTimeout(url, opts, ms, label) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error(label + " " + ms + "ms ichida javob bermadi");
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return json(204, {});
   if (event.httpMethod !== "POST")    return json(405, { error: "Faqat POST" });
@@ -31,66 +48,58 @@ exports.handler = async (event) => {
   const lead   = d.lead || {};
   const labels = d.leadLabels || {};
 
-  /* ---------- 1. Claude tahlili ---------- */
-  let analysis = null, analysisError = null;
-  try {
-    analysis = await askClaude(d);
-  } catch (e) {
-    analysisError = String(e.message || e);
-    console.error("Claude error:", analysisError);
-  }
+  /* ---------- 1. Bir vaqtda: Claude tahlili + darhol yuboriladigan
+     Telegram xabarlari (bular tahlil natijasiga bog'liq emas) ---------- */
+  const head =
+    `🧭 <b>YANGI TEST NATIJASI</b>\n` +
+    `Yo'nalish: <b>${esc(d.trackName || d.track)}</b>\n` +
+    `━━━━━━━━━━━━━━━\n` +
+    Object.keys(lead).map(k =>
+      `${icon(k)} <b>${esc(labels[k] || k)}:</b> ${esc(lead[k] || "—")}`
+    ).join("\n") +
+    `\n━━━━━━━━━━━━━━━\n` +
+    `📊 <b>O'rtacha ball: ${d.average}/10</b>\n<i>${esc(d.verdict || "")}</i>\n\n` +
+    d.scores.map(s => `${bar(s.score)} <code>${pad(s.score)}</code>  ${esc(s.name)}`).join("\n") +
+    `\n\n⚠️ <b>Zaif:</b> ${(d.weak   || []).map(s => esc(s.name) + " (" + s.score + ")").join(", ")}` +
+    `\n💪 <b>Kuchli:</b> ${(d.strong || []).map(s => esc(s.name) + " (" + s.score + ")").join(", ")}` +
+    `\n\n🕒 ${new Date().toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })}`;
 
-  /* ---------- 2. Telegram ---------- */
-  try {
-    const head =
-      `🧭 <b>YANGI TEST NATIJASI</b>\n` +
-      `Yo'nalish: <b>${esc(d.trackName || d.track)}</b>\n` +
-      `━━━━━━━━━━━━━━━\n` +
-      Object.keys(lead).map(k =>
-        `${icon(k)} <b>${esc(labels[k] || k)}:</b> ${esc(lead[k] || "—")}`
-      ).join("\n") +
-      `\n━━━━━━━━━━━━━━━\n` +
-      `📊 <b>O'rtacha ball: ${d.average}/10</b>\n<i>${esc(d.verdict || "")}</i>\n\n` +
-      d.scores.map(s => `${bar(s.score)} <code>${pad(s.score)}</code>  ${esc(s.name)}`).join("\n") +
-      `\n\n⚠️ <b>Zaif:</b> ${(d.weak   || []).map(s => esc(s.name) + " (" + s.score + ")").join(", ")}` +
-      `\n💪 <b>Kuchli:</b> ${(d.strong || []).map(s => esc(s.name) + " (" + s.score + ")").join(", ")}` +
-      `\n\n🕒 ${new Date().toLocaleString("uz-UZ", { timeZone: "Asia/Tashkent" })}`;
+  const [claudeResult] = await Promise.allSettled([
+    askClaude(d),
+    tg(head).catch(e => console.error("Telegram (head) error:", e)),
+    (Array.isArray(d.answers) && d.answers.length)
+      ? tgDoc(
+          buildAnswersFile(d),
+          `javoblar_${String(lead.name || "test").replace(/[^\p{L}\p{N}]+/gu, "_").slice(0, 40)}.txt`,
+          `📄 To'liq javoblar — ${esc(lead.name || "")}`
+        ).catch(e => console.error("Telegram (doc) error:", e))
+      : Promise.resolve(),
+  ]);
 
-    await tg(head);
+  const analysis = claudeResult.status === "fulfilled" ? claudeResult.value : null;
+  if (claudeResult.status === "rejected") console.error("Claude error:", claudeResult.reason);
 
-    if (analysis) {
-      await tg(`🤖 <b>TAHLIL</b>\n━━━━━━━━━━━━━━━\n${esc(analysis)}`);
-    } else {
-      await tg(`🤖 <i>Tahlil tayyorlanmadi: ${esc(analysisError || "noma'lum xato")}</i>`);
-    }
-
-    if (Array.isArray(d.answers) && d.answers.length) {
-      const txt = buildAnswersFile(d);
-      const safe = String(lead.name || "test").replace(/[^\p{L}\p{N}]+/gu, "_").slice(0, 40);
-      await tgDoc(txt, `javoblar_${safe}.txt`, `📄 To'liq javoblar — ${esc(lead.name || "")}`);
-    }
-  } catch (e) {
-    console.error("Telegram error:", e);
-  }
-
-  /* ---------- 3. Google Sheets (ixtiyoriy) ---------- */
-  try {
-    if (process.env.GSHEETS_WEBHOOK_URL) {
-      await writeToSheet(d, analysis);
-    }
-  } catch (e) {
-    console.error("Sheets error:", e);
-  }
+  /* ---------- 2. Tahlilga bog'liq bo'lgan qismlar: Telegram xabari + Sheets ---------- */
+  await Promise.allSettled([
+    tg(
+      analysis
+        ? `🤖 <b>TAHLIL</b>\n━━━━━━━━━━━━━━━\n${esc(analysis)}`
+        : `🤖 <i>Tahlil tayyorlanmadi: ${esc(String(claudeResult.reason && claudeResult.reason.message || claudeResult.reason || "noma'lum xato"))}</i>`
+    ).catch(e => console.error("Telegram (tahlil) error:", e)),
+    process.env.GSHEETS_WEBHOOK_URL
+      ? writeToSheet(d, analysis).catch(e => console.error("Sheets error:", e))
+      : Promise.resolve(),
+  ]);
 
   return json(200, { ok: true, analysis });
 };
 
 async function writeToSheet(d, analysis) {
-  const res = await fetch(process.env.GSHEETS_WEBHOOK_URL, {
+  const res = await withTimeout(process.env.GSHEETS_WEBHOOK_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ...d, analysis: analysis || "" }),
-  });
+  }, 8000, "Sheets webhook");
   if (!res.ok) throw new Error("Sheets webhook " + res.status + ": " + (await res.text()).slice(0, 300));
 }
 
@@ -152,7 +161,7 @@ Umumiy maslahat berma ("ko'proq harakat qiling" kabi).
 
 Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
 
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await withTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -165,7 +174,7 @@ Faqat shu matnni qaytar, boshqa izoh qo'shma. "Sizga" deb murojaat qil.`;
       system,
       messages: [{ role: "user", content: prompt }],
     }),
-  });
+  }, 15000, "Anthropic API");
 
   if (!r.ok) throw new Error("Anthropic API " + r.status + ": " + (await r.text()).slice(0, 300));
   const data = await r.json();
@@ -189,11 +198,11 @@ async function tg(text) {
     };
     if (process.env.TELEGRAM_THREAD_ID) body.message_thread_id = Number(process.env.TELEGRAM_THREAD_ID);
 
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await withTimeout(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, 8000, "Telegram sendMessage");
     if (!res.ok) console.error("TG sendMessage:", await res.text());
   }
 }
@@ -210,7 +219,7 @@ async function tgDoc(content, filename, caption) {
   if (process.env.TELEGRAM_THREAD_ID) form.append("message_thread_id", process.env.TELEGRAM_THREAD_ID);
   form.append("document", new Blob([content], { type: "text/plain" }), filename);
 
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form });
+  const res = await withTimeout(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form }, 8000, "Telegram sendDocument");
   if (!res.ok) console.error("TG sendDocument:", await res.text());
 }
 
